@@ -41,13 +41,29 @@ func (cfg *apiConfig) ResetRequests(rw http.ResponseWriter, r *http.Request) {
 	rw.Write([]byte("resetted request count"))
 }
 
+func (cfg *apiConfig) ResetUsers(rw http.ResponseWriter, r *http.Request) {
+	platform := os.Getenv("PLATFORM")
+	if platform != "dev" {
+		http.Error(rw, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Now safely proceed to delete the users
+	err := cfg.database.DeleteAllUsers(r.Context())
+	if err != nil {
+		http.Error(rw, "Failed to reset users", http.StatusInternalServerError)
+		return
+	}
+
+	rw.Write([]byte("resetted users"))
+}
+
 func (apiCfg *apiConfig) AddUser(rw http.ResponseWriter, r *http.Request) {
 	rw.Header().Set("Content-Type", "application/json") // Set Content-Type for response
 
 	// Decode incoming JSON into the `User` struct
-	decoder := json.NewDecoder(r.Body)
-	u := User{}
-	err := decoder.Decode(&u)
+	req := CreateUserRequest{}
+	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
 		// If JSON decoding fails, return InternalServerError
 		log.Printf("Error decoding parameters: %s", err)
@@ -56,7 +72,7 @@ func (apiCfg *apiConfig) AddUser(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate email format
-	_, err = mail.ParseAddress(u.Email)
+	_, err = mail.ParseAddress(req.Email)
 	if err != nil {
 		// If email is invalid, return BadRequest
 		log.Printf("Invalid email address: %s", err)
@@ -65,7 +81,7 @@ func (apiCfg *apiConfig) AddUser(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	// Attempt to create the user in the database
-	user, err := apiCfg.database.CreateUser(r.Context(), u.Email)
+	user, err := apiCfg.database.CreateUser(r.Context(), req.Email)
 	if err != nil {
 		// If database insertion fails, return InternalServerError
 		log.Printf("Error creating user: %s", err)
@@ -155,6 +171,42 @@ func (apiCfg *apiConfig) CreateChirp(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (apiCfg *apiConfig) GetChirps(rw http.ResponseWriter, r *http.Request) {
+	rw.Header().Set("Content-Type", "application/json")
+
+	arrayOfChirps, err := apiCfg.database.GetAllChirps(r.Context())
+	if err != nil {
+		log.Printf("Error getting Chirps: %s", err)
+		rw.WriteHeader(500)
+		return
+	}
+
+	responseChirps := []Chirp{}
+
+	for _, dbChirp := range arrayOfChirps {
+		// Make sure to handle the NullUUID properly
+		if !dbChirp.UserID.Valid {
+			// Handle the case where UserID is null
+			continue // or handle it however makes sense for your application
+		}
+
+		chirp := Chirp{
+			ID:        dbChirp.ID,
+			CreatedAt: dbChirp.CreatedAt,
+			UpdatedAt: dbChirp.UpdatedAt,
+			Body:      dbChirp.Body,
+			UserID:    dbChirp.UserID.UUID,
+		}
+		responseChirps = append(responseChirps, chirp)
+	}
+
+	rw.WriteHeader(200)
+	if err := json.NewEncoder(rw).Encode(responseChirps); err != nil {
+		log.Printf("Error encoding response: %v", err)
+		return
+	}
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -163,6 +215,10 @@ func main() {
 
 	dbURL := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal("couldnt open database")
+	}
+
 	dbQueries := database.New(db)
 
 	mux := http.NewServeMux()
@@ -178,11 +234,12 @@ func main() {
 	handler := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(handler))
 	mux.Handle("GET /admin/metrics", http.HandlerFunc(apiCfg.NumOfRequests))
-	mux.Handle("POST /admin/reset", http.HandlerFunc(apiCfg.ResetRequests))
-	mux.Handle("POST /api/validate_chirp", http.HandlerFunc(apiCfg.CreateChirp))
+	mux.Handle("POST /admin/resetmetrics", http.HandlerFunc(apiCfg.ResetRequests))
+	mux.Handle("POST /admin/reset", http.HandlerFunc(apiCfg.ResetUsers))
 	mux.Handle("/assets", http.FileServer(http.Dir("./assets")))
 	mux.Handle("GET /api/healthz", http.HandlerFunc(Readiness))
 	mux.Handle("POST /api/users", http.HandlerFunc(apiCfg.AddUser))
+	mux.Handle("GET /api/chirps", http.HandlerFunc(apiCfg.GetChirps))
 	mux.Handle("POST /api/chirps", http.HandlerFunc(apiCfg.CreateChirp))
 	log.Printf("Starting server on %s", server.Addr)
 	err = server.ListenAndServe()

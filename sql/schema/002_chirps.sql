@@ -6,7 +6,7 @@ CREATE TABLE chirps (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     body TEXT NOT NULL,
-    user_id uuid REFERENCES users(id) ON DELETE CASCADE
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- +goose Down
