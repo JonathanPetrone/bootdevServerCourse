@@ -145,7 +145,7 @@ func (apiCfg *apiConfig) CreateChirp(rw http.ResponseWriter, r *http.Request) {
 
 	chirp := database.CreateChirpParams{
 		Body:   joinedWords,
-		UserID: uuid.NullUUID{UUID: c.UserID, Valid: true}, // Convert c.UserID to NullUUID
+		UserID: c.UserID,
 	}
 
 	createdChirp, err := apiCfg.database.CreateChirp(r.Context(), chirp)
@@ -161,7 +161,7 @@ func (apiCfg *apiConfig) CreateChirp(rw http.ResponseWriter, r *http.Request) {
 		CreatedAt: createdChirp.CreatedAt,
 		UpdatedAt: createdChirp.UpdatedAt,
 		Body:      createdChirp.Body,
-		UserID:    createdChirp.UserID.UUID, // Extract from NullUUID
+		UserID:    createdChirp.UserID,
 	}
 
 	if err := writeJSONResponse(rw, 201, resp); err != nil {
@@ -184,18 +184,13 @@ func (apiCfg *apiConfig) GetChirps(rw http.ResponseWriter, r *http.Request) {
 	responseChirps := []Chirp{}
 
 	for _, dbChirp := range arrayOfChirps {
-		// Make sure to handle the NullUUID properly
-		if !dbChirp.UserID.Valid {
-			// Handle the case where UserID is null
-			continue // or handle it however makes sense for your application
-		}
 
 		chirp := Chirp{
 			ID:        dbChirp.ID,
 			CreatedAt: dbChirp.CreatedAt,
 			UpdatedAt: dbChirp.UpdatedAt,
 			Body:      dbChirp.Body,
-			UserID:    dbChirp.UserID.UUID,
+			UserID:    dbChirp.UserID,
 		}
 		responseChirps = append(responseChirps, chirp)
 	}
@@ -205,6 +200,38 @@ func (apiCfg *apiConfig) GetChirps(rw http.ResponseWriter, r *http.Request) {
 		log.Printf("Error encoding response: %v", err)
 		return
 	}
+}
+
+func (apiCfg *apiConfig) GetChirp(rw http.ResponseWriter, r *http.Request) {
+	// Call PathValue to get the chirpID from the path as a string
+	chirpIDStr := r.PathValue("chirpID")
+
+	// Convert the string to a uuid.UUID
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		// Handle the error appropriately if the ID is not a valid UUID
+		http.Error(rw, "Invalid Chirp ID", http.StatusBadRequest)
+		return
+	}
+
+	// Fetch the chirp from the database using the valid chirpID
+	chirp, err := apiCfg.database.GetOneChirp(r.Context(), chirpID)
+	if err != nil {
+		// Handle the case where the chirp is not found
+		http.Error(rw, "Chirp not found", http.StatusNotFound)
+		return
+	}
+
+	chirpRes := Chirp{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	}
+
+	// If the chirp is found, respond with its data (this part is an example)
+	writeJSONResponse(rw, http.StatusOK, chirpRes)
 }
 
 func main() {
@@ -240,6 +267,7 @@ func main() {
 	mux.Handle("GET /api/healthz", http.HandlerFunc(Readiness))
 	mux.Handle("POST /api/users", http.HandlerFunc(apiCfg.AddUser))
 	mux.Handle("GET /api/chirps", http.HandlerFunc(apiCfg.GetChirps))
+	mux.Handle("GET /api/chirps/{chirpID}", http.HandlerFunc(apiCfg.GetChirp))
 	mux.Handle("POST /api/chirps", http.HandlerFunc(apiCfg.CreateChirp))
 	log.Printf("Starting server on %s", server.Addr)
 	err = server.ListenAndServe()
