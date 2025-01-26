@@ -36,11 +36,12 @@ type CreateUserRequest struct {
 }
 
 type LoginResponse struct {
-	ID        string    `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           string    `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 func (cfg *apiConfig) ResetUsers(rw http.ResponseWriter, r *http.Request) {
@@ -171,19 +172,9 @@ func (apiCfg *apiConfig) LoginUser(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle expiration time
-	expiresIn := 3600 // default 1 hour in seconds
-	if loginRequest.ExpiresInSeconds != nil {
-		requestedSeconds := *loginRequest.ExpiresInSeconds
-		if requestedSeconds > 0 && requestedSeconds <= 3600 {
-			expiresIn = requestedSeconds
-		}
-	}
-
-	// Create token with expiration
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
 		Subject:   user.ID.String(),
-		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expiresIn) * time.Second)),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)), // always 1 hour
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	})
 
@@ -195,12 +186,33 @@ func (apiCfg *apiConfig) LoginUser(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate refresh token
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		resp := errorResponse{Error: "Error creating refresh token"}
+		writeJSONResponse(rw, http.StatusInternalServerError, resp)
+		return
+	}
+
+	// Store refresh token in database
+	_, err = apiCfg.database.CreateRefreshtoken(r.Context(), database.CreateRefreshtokenParams{
+		Token:     refreshToken,
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(60 * 24 * time.Hour), // 60 days
+	})
+	if err != nil {
+		resp := errorResponse{Error: "Error storing refresh token"}
+		writeJSONResponse(rw, http.StatusInternalServerError, resp)
+		return
+	}
+
 	response := LoginResponse{
-		ID:        user.ID.String(),
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
-		Token:     tokenString,
+		ID:           user.ID.String(),
+		CreatedAt:    user.CreatedAt,
+		UpdatedAt:    user.UpdatedAt,
+		Email:        user.Email,
+		Token:        tokenString,
+		RefreshToken: refreshToken,
 	}
 
 	writeJSONResponse(rw, http.StatusOK, response)

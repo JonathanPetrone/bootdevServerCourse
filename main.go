@@ -60,6 +60,8 @@ func main() {
 	mux.Handle("GET /api/chirps/{chirpID}", http.HandlerFunc(apiCfg.GetChirp))
 	mux.Handle("POST /api/chirps", http.HandlerFunc(apiCfg.CreateChirp))
 	mux.Handle("POST /api/login", http.HandlerFunc(apiCfg.LoginUser))
+	mux.Handle("POST /api/refresh", http.HandlerFunc(apiCfg.RefreshToken))
+	mux.Handle("POST /api/revoke", http.HandlerFunc(apiCfg.RevokeToken))
 	log.Printf("Starting server on %s", server.Addr)
 	err = server.ListenAndServe()
 
