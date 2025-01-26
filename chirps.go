@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jonathanpetrone/bootdevServerCourse/internal/auth"
 	"github.com/jonathanpetrone/bootdevServerCourse/internal/database"
 )
 
@@ -21,9 +22,26 @@ type Chirp struct {
 
 func (apiCfg *apiConfig) CreateChirp(rw http.ResponseWriter, r *http.Request) {
 	rw.Header().Set("Content-Type", "application/json")
+
+	// Get token from Authorization header
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		resp := errorResponse{Error: "Authentication required"}
+		writeJSONResponse(rw, http.StatusUnauthorized, resp)
+		return
+	}
+
+	// Validate JWT and get userID directly
+	userID, err := auth.ValidateJWT(token, apiCfg.secret)
+	if err != nil {
+		resp := errorResponse{Error: "Invalid token"}
+		writeJSONResponse(rw, http.StatusUnauthorized, resp)
+		return
+	}
+
 	decoder := json.NewDecoder(r.Body)
 	c := Chirp{}
-	err := decoder.Decode(&c)
+	err = decoder.Decode(&c)
 	if err != nil {
 		log.Printf("Error decoding parameters: %s", err)
 		resp := errorResponse{Error: "Invalid JSON payload"}
@@ -57,7 +75,7 @@ func (apiCfg *apiConfig) CreateChirp(rw http.ResponseWriter, r *http.Request) {
 
 	chirp := database.CreateChirpParams{
 		Body:   joinedWords,
-		UserID: c.UserID,
+		UserID: userID,
 	}
 
 	createdChirp, err := apiCfg.database.CreateChirp(r.Context(), chirp)

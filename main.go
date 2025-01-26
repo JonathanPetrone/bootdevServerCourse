@@ -15,12 +15,18 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	database       *database.Queries
+	secret         string
 }
 
 func main() {
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatal("couldn't load env variable")
+	}
+
+	jwtSecret := os.Getenv("SECRET")
+	if jwtSecret == "" {
+		log.Fatal("SECRET environment variable is not set")
 	}
 
 	dbURL := os.Getenv("DB_URL")
@@ -39,6 +45,7 @@ func main() {
 
 	apiCfg := &apiConfig{
 		database: dbQueries,
+		secret:   jwtSecret,
 	}
 
 	handler := http.StripPrefix("/app", http.FileServer(http.Dir(".")))

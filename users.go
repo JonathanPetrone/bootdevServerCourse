@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/google/uuid"
 	"github.com/jonathanpetrone/bootdevServerCourse/internal/auth"
 	hash "github.com/jonathanpetrone/bootdevServerCourse/internal/auth"
@@ -23,13 +25,22 @@ type User struct {
 }
 
 type LoginForUser struct {
-	Password string `json:"password"`
-	Email    string `json:"email"`
+	Password         string `json:"password"`
+	Email            string `json:"email"`
+	ExpiresInSeconds *int   `json:"expires_in_seconds,omitempty"`
 }
 
 type CreateUserRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+}
+
+type LoginResponse struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 func (cfg *apiConfig) ResetUsers(rw http.ResponseWriter, r *http.Request) {
@@ -127,52 +138,70 @@ func (apiCfg *apiConfig) AddUser(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (apiCfg *apiConfig) LoginUser(rw http.ResponseWriter, r *http.Request) {
-	LoginRequest := LoginForUser{}
-	err := json.NewDecoder(r.Body).Decode(&LoginRequest)
-	if err != nil {
-		rw.WriteHeader(http.StatusBadRequest)
-		rw.Write([]byte("Invalid JSON"))
+	rw.Header().Set("Content-Type", "application/json")
+
+	loginRequest := LoginForUser{}
+	if err := json.NewDecoder(r.Body).Decode(&loginRequest); err != nil {
+		resp := errorResponse{Error: "Invalid JSON payload"}
+		writeJSONResponse(rw, http.StatusBadRequest, resp)
 		return
 	}
 
-	if LoginRequest.Email == "" || LoginRequest.Password == "" {
-		rw.WriteHeader(http.StatusBadRequest)
-		rw.Write([]byte("Email and password are required"))
+	if loginRequest.Email == "" || loginRequest.Password == "" {
+		resp := errorResponse{Error: "Email and password are required"}
+		writeJSONResponse(rw, http.StatusBadRequest, resp)
 		return
 	}
 
-	user, err := apiCfg.database.GetUser(r.Context(), LoginRequest.Email)
+	user, err := apiCfg.database.GetUser(r.Context(), loginRequest.Email)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			rw.WriteHeader(http.StatusUnauthorized)
-			rw.Write([]byte("Incorrect email or password"))
+			resp := errorResponse{Error: "Incorrect email or password"}
+			writeJSONResponse(rw, http.StatusUnauthorized, resp)
 			return
 		}
-		log.Printf("Error fetching user: %s", err)
-		rw.WriteHeader(http.StatusInternalServerError)
+		resp := errorResponse{Error: "Internal server error"}
+		writeJSONResponse(rw, http.StatusInternalServerError, resp)
 		return
 	}
 
-	err = auth.CheckPasswordHash(LoginRequest.Password, user.HashedPassword)
+	if err := auth.CheckPasswordHash(loginRequest.Password, user.HashedPassword); err != nil {
+		resp := errorResponse{Error: "Incorrect email or password"}
+		writeJSONResponse(rw, http.StatusUnauthorized, resp)
+		return
+	}
+
+	// Handle expiration time
+	expiresIn := 3600 // default 1 hour in seconds
+	if loginRequest.ExpiresInSeconds != nil {
+		requestedSeconds := *loginRequest.ExpiresInSeconds
+		if requestedSeconds > 0 && requestedSeconds <= 3600 {
+			expiresIn = requestedSeconds
+		}
+	}
+
+	// Create token with expiration
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		Subject:   user.ID.String(),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expiresIn) * time.Second)),
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+	})
+
+	// Sign the token
+	tokenString, err := token.SignedString([]byte(apiCfg.secret))
 	if err != nil {
-		rw.WriteHeader(http.StatusUnauthorized)
-		rw.Write([]byte("Incorrect email or password"))
+		resp := errorResponse{Error: "Error creating token"}
+		writeJSONResponse(rw, http.StatusInternalServerError, resp)
 		return
 	}
 
-	response := User{
-		ID:        user.ID,
+	response := LoginResponse{
+		ID:        user.ID.String(),
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
+		Token:     tokenString,
 	}
 
-	rw.WriteHeader(http.StatusOK)
-	err = json.NewEncoder(rw).Encode(response)
-	if err != nil {
-		log.Printf("Error encoding response: %s", err)
-		rw.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
+	writeJSONResponse(rw, http.StatusOK, response)
 }
