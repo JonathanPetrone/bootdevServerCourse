@@ -163,3 +163,55 @@ func (apiCfg *apiConfig) GetChirp(rw http.ResponseWriter, r *http.Request) {
 	// If the chirp is found, respond with its data (this part is an example)
 	writeJSONResponse(rw, http.StatusOK, chirpRes)
 }
+
+func (apiCfg *apiConfig) DeleteChirp(rw http.ResponseWriter, r *http.Request) {
+	chirpIDStr := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		resp := errorResponse{Error: "Invalid chirp ID"}
+		writeJSONResponse(rw, http.StatusBadRequest, resp)
+		return
+	}
+
+	// Get token from Authorization header
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		resp := errorResponse{Error: "Authentication required"}
+		writeJSONResponse(rw, http.StatusUnauthorized, resp)
+		return
+	}
+
+	// Validate JWT and get userID directly
+	userID, err := auth.ValidateJWT(token, apiCfg.secret)
+	if err != nil {
+		resp := errorResponse{Error: "Invalid token"}
+		writeJSONResponse(rw, http.StatusUnauthorized, resp)
+		return
+	}
+
+	chirp, err := apiCfg.database.GetOneChirp(r.Context(), chirpID)
+	if err != nil {
+		resp := errorResponse{Error: "Chirp not found"}
+		writeJSONResponse(rw, http.StatusNotFound, resp)
+		return
+	}
+
+	// Check if user is the author
+	if chirp.UserID != userID {
+		resp := errorResponse{Error: "Forbidden"}
+		writeJSONResponse(rw, http.StatusForbidden, resp)
+		return
+	}
+
+	// Delete the chirp
+	err = apiCfg.database.DeleteOneChirp(r.Context(), chirpID)
+	if err != nil {
+		resp := errorResponse{Error: "Failed to delete chirp"}
+		writeJSONResponse(rw, http.StatusInternalServerError, resp)
+		return
+	}
+
+	// Success - return 204 No Content
+	rw.WriteHeader(http.StatusNoContent)
+
+}

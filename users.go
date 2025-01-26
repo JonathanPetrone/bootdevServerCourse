@@ -44,6 +44,12 @@ type LoginResponse struct {
 	RefreshToken string    `json:"refresh_token"`
 }
 
+type UserResponse struct {
+	ID        string    `json:"id"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 func (cfg *apiConfig) ResetUsers(rw http.ResponseWriter, r *http.Request) {
 	platform := os.Getenv("PLATFORM")
 	if platform != "dev" {
@@ -216,4 +222,56 @@ func (apiCfg *apiConfig) LoginUser(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONResponse(rw, http.StatusOK, response)
+}
+
+func (apiCfg *apiConfig) ChangeEmailAndPassword(rw http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		resp := errorResponse{Error: "Authentication required"}
+		writeJSONResponse(rw, http.StatusUnauthorized, resp)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, apiCfg.secret)
+	if err != nil {
+		resp := errorResponse{Error: "Invalid token"}
+		writeJSONResponse(rw, http.StatusUnauthorized, resp)
+		return
+	}
+
+	user := CreateUserRequest{}
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&user); err != nil {
+		resp := errorResponse{Error: "Invalid request body"}
+		writeJSONResponse(rw, http.StatusBadRequest, resp)
+		return
+	}
+
+	newPassword, err := auth.HashPassword(user.Password)
+	if err != nil {
+		resp := errorResponse{Error: "Couldn't hash password"}
+		writeJSONResponse(rw, http.StatusBadRequest, resp)
+		return
+	}
+
+	params := database.UpdateUserParams{
+		Email:          user.Email,
+		HashedPassword: newPassword,
+		ID:             userID,
+	}
+
+	updatedUser, err := apiCfg.database.UpdateUser(r.Context(), params)
+	if err != nil {
+		resp := errorResponse{Error: "Couldn't update user"}
+		writeJSONResponse(rw, http.StatusBadRequest, resp)
+		return
+	}
+
+	userResponse := UserResponse{
+		ID:        updatedUser.ID.String(),
+		Email:     updatedUser.Email,
+		CreatedAt: updatedUser.CreatedAt,
+	}
+
+	writeJSONResponse(rw, http.StatusOK, userResponse)
 }
