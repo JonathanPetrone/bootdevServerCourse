@@ -13,13 +13,31 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"github.com/jonathanpetrone/bootdevServerCourse/internal/auth"
+	hash "github.com/jonathanpetrone/bootdevServerCourse/internal/auth"
 	"github.com/jonathanpetrone/bootdevServerCourse/internal/database"
+	"github.com/lib/pq"
 	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	database       *database.Queries
+}
+
+type LoginForUser struct {
+	Password string `json:"password"`
+	Email    string `json:"email"`
+}
+
+func isDuplicateKeyError(err error) bool {
+	// Check if the error is of type pq.Error
+	pqErr, ok := err.(*pq.Error)
+	if !ok {
+		return false
+	}
+	// Check if the SQL state matches PostgreSQL's unique_violation code
+	return pqErr.Code == "23505"
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -71,24 +89,52 @@ func (apiCfg *apiConfig) AddUser(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Password == "" {
+		log.Printf("Password is required")
+		rw.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	// Validate email format
 	_, err = mail.ParseAddress(req.Email)
 	if err != nil {
 		// If email is invalid, return BadRequest
 		log.Printf("Invalid email address: %s", err)
 		rw.WriteHeader(http.StatusBadRequest)
+		rw.Write([]byte("Invalid email address"))
 		return
 	}
 
-	// Attempt to create the user in the database
-	user, err := apiCfg.database.CreateUser(r.Context(), req.Email)
+	// Hash the password
+	hashedPassword, err := hash.HashPassword(req.Password)
 	if err != nil {
-		// If database insertion fails, return InternalServerError
-		log.Printf("Error creating user: %s", err)
+		log.Printf("Error hashing password: %s", err)
 		rw.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
+	// Create the user parameters for database insertion
+	createUser := database.CreateUserParams{
+		Email:          req.Email,
+		HashedPassword: hashedPassword,
+	}
+
+	// Attempt to create the user in the database
+	user, err := apiCfg.database.CreateUser(r.Context(), createUser)
+	if err != nil {
+		// Detect duplicate email error
+		if isDuplicateKeyError(err) { // Check for unique key violation
+			log.Printf("User already exists with email: %s", createUser.Email)
+			rw.WriteHeader(http.StatusBadRequest)
+			rw.Write([]byte("User already exists"))
+			return
+		}
+
+		// Handle all other errors
+		log.Printf("Error creating user: %s", err)
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	// Map database user to response user
 	newUser := User{
 		ID:        user.ID,
@@ -234,6 +280,57 @@ func (apiCfg *apiConfig) GetChirp(rw http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(rw, http.StatusOK, chirpRes)
 }
 
+func (apiCfg *apiConfig) LoginUser(rw http.ResponseWriter, r *http.Request) {
+	LoginRequest := LoginForUser{}
+	err := json.NewDecoder(r.Body).Decode(&LoginRequest)
+	if err != nil {
+		rw.WriteHeader(http.StatusBadRequest)
+		rw.Write([]byte("Invalid JSON"))
+		return
+	}
+
+	if LoginRequest.Email == "" || LoginRequest.Password == "" {
+		rw.WriteHeader(http.StatusBadRequest)
+		rw.Write([]byte("Email and password are required"))
+		return
+	}
+
+	user, err := apiCfg.database.GetUser(r.Context(), LoginRequest.Email)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			rw.WriteHeader(http.StatusUnauthorized)
+			rw.Write([]byte("Incorrect email or password"))
+			return
+		}
+		log.Printf("Error fetching user: %s", err)
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	err = auth.CheckPasswordHash(LoginRequest.Password, user.HashedPassword)
+	if err != nil {
+		rw.WriteHeader(http.StatusUnauthorized)
+		rw.Write([]byte("Incorrect email or password"))
+		return
+	}
+
+	response := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+
+	rw.WriteHeader(http.StatusOK)
+	err = json.NewEncoder(rw).Encode(response)
+	if err != nil {
+		log.Printf("Error encoding response: %s", err)
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -269,6 +366,7 @@ func main() {
 	mux.Handle("GET /api/chirps", http.HandlerFunc(apiCfg.GetChirps))
 	mux.Handle("GET /api/chirps/{chirpID}", http.HandlerFunc(apiCfg.GetChirp))
 	mux.Handle("POST /api/chirps", http.HandlerFunc(apiCfg.CreateChirp))
+	mux.Handle("POST /api/login", http.HandlerFunc(apiCfg.LoginUser))
 	log.Printf("Starting server on %s", server.Addr)
 	err = server.ListenAndServe()
 

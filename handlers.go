@@ -28,7 +28,8 @@ type errorResponse struct {
 }
 
 type CreateUserRequest struct {
-	Email string `json:"email"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 var BannedWords = []string{"kerfuffle",
